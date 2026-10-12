@@ -1,7 +1,9 @@
-/* Archipelago bridge for Mercenaries Recompiled (plugin interface 2).
+/* Local socket bridge of the Archipelago plugin (plugin interface 2).
  *
- * Serves one local TCP client (the Archipelago client) and runs its requests on
- * the game thread during on_update. All guest access goes through the host:
+ * Serves one local TCP client (the Python Archipelago client, or the
+ * tools/recomp_repl.py console) and runs its requests on the game thread during
+ * on_update. While the in-game client is active, Lua and write requests are
+ * refused so two clients cannot deliver the same items. All guest access goes through the host:
  * run_lua for script work, read_guest/write_guest for raw memory.
  *
  * Wire format, all integers little-endian:
@@ -17,7 +19,6 @@
  * Unknown kinds get status 255.
  */
 #define WIN32_LEAN_AND_MEAN
-#define MERC_PLUGIN_IMPLEMENTATION
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -25,7 +26,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stddef.h>
-#include "../../sdk/mercenaries_plugin.h"
+#include "socket_bridge.h"
 
 #define BRIDGE_VERSION "1"
 #define MAX_BODY (1024u * 1024u)
@@ -62,6 +63,9 @@ static char *result_buffer;
 static uint64_t lua_runs, lua_errors, not_ready_count;
 static volatile LONG connected;
 static int winsock_started;
+static int started;
+static int changes_allowed = 1;
+static const char REFUSED[] = "The in-game Archipelago client is active; disconnect it (F7) to use the bridge.";
 
 static void log_text(const char *text) { host->v1.log(host->v1.context, text); }
 
@@ -135,6 +139,10 @@ static void handle_info(const Message *m)
 
 static void handle_lua(const Message *m)
 {
+    if (!changes_allowed) {
+        respond(m->generation, m->id, MERC_LUA_REJECTED, REFUSED, (uint32_t)(sizeof(REFUSED) - 1u));
+        return;
+    }
     size_t length = 0;
     int status = host->run_lua(host->v1.context, (const char *)m->data, m->length,
                                result_buffer, MAX_RESULT, &length);
@@ -164,14 +172,19 @@ static void handle_write(const Message *m)
         respond(m->generation, m->id, MERC_LUA_REJECTED, NULL, 0);
         return;
     }
+    if (!changes_allowed) {
+        respond(m->generation, m->id, MERC_LUA_REJECTED, REFUSED, (uint32_t)(sizeof(REFUSED) - 1u));
+        return;
+    }
     uint32_t address = get_u32(m->data);
     int ok = host->v1.write_guest(host->v1.context, address, m->data + 4, m->length - 4u);
     respond(m->generation, m->id, ok ? 0 : MERC_LUA_REJECTED, NULL, 0);
 }
 
-static int MERC_PLUGIN_CALL update(void *userdata, const MercPluginUpdate *event)
+void archipelago_bridge_update(int allow_changes)
 {
-    (void)userdata; (void)event;
+    if (!started) return;
+    changes_allowed = allow_changes;
     ULONGLONG start = GetTickCount64();
     for (unsigned handled = 0; handled < max_per_update; ++handled) {
         EnterCriticalSection(&lock);
@@ -190,7 +203,6 @@ static int MERC_PLUGIN_CALL update(void *userdata, const MercPluginUpdate *event
         free(m);
         if (GetTickCount64() - start >= budget_ms) break;
     }
-    return 1;
 }
 
 /* ---- I/O thread ------------------------------------------------------ */
@@ -307,9 +319,9 @@ static DWORD WINAPI io_main(LPVOID unused)
 
 /* ---- lifecycle ------------------------------------------------------- */
 
-static void MERC_PLUGIN_CALL shutdown_plugin(void *userdata)
+void archipelago_bridge_stop(void)
 {
-    (void)userdata;
+    if (!started) return;
     stopping = 1;
     if (wake_event) SetEvent(wake_event);
     if (listener != INVALID_SOCKET) { closesocket(listener); listener = INVALID_SOCKET; }
@@ -322,50 +334,30 @@ static void MERC_PLUGIN_CALL shutdown_plugin(void *userdata)
     DeleteCriticalSection(&lock);
     free(result_buffer); result_buffer = NULL;
     if (winsock_started) { WSACleanup(); winsock_started = 0; }
-    if (host) log_text("Archipelago bridge stopped.");
+    log_text("Archipelago bridge stopped.");
+    started = 0;
     host = NULL;
 }
 
-static void read_settings(void)
+int archipelago_bridge_start(const MercPluginHost2 *plugin_host, unsigned short listen_port,
+                             unsigned update_budget_ms, unsigned requests_per_update,
+                             char *error, size_t capacity)
 {
-    wchar_t path[32768];
-    if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, host->v1.settings_directory, -1, path, 32700))
-        return;
-    wcscat_s(path, 32768, L"\\bridge.ini");
-    UINT p = GetPrivateProfileIntW(L"Bridge", L"Port", 28012, path);
-    if (p >= 1024 && p <= 65535) port = (unsigned short)p;
-    budget_ms = GetPrivateProfileIntW(L"Bridge", L"UpdateBudgetMs", 4, path);
-    if (budget_ms < 1) budget_ms = 1;
-    if (budget_ms > 16) budget_ms = 16;
-    max_per_update = GetPrivateProfileIntW(L"Bridge", L"MaxRequestsPerUpdate", 64, path);
-    if (max_per_update < 1) max_per_update = 1;
-    if (max_per_update > 1024) max_per_update = 1024;
-}
-
-MERC_PLUGIN_EXPORT int MERC_PLUGIN_CALL MercenariesPlugin_Init(
-    const MercPluginHost *base, MercPlugin *plugin, char *error, uint32_t capacity)
-{
-    if (!base || base->api_version != MERCENARIES_PLUGIN_API_VERSION_2 ||
-        base->struct_size < sizeof(MercPluginHost2) || !plugin || plugin->struct_size < sizeof(MercPlugin)) {
-        if (error && capacity) snprintf(error, capacity, "This plugin needs a recomp build with plugin interface 2.");
-        return 0;
-    }
-    host = (const MercPluginHost2 *)base;
-    if (!host->run_lua) {
-        if (error && capacity) snprintf(error, capacity, "Host did not provide run_lua.");
-        return 0;
-    }
+    if (started) return 1;
+    host = plugin_host;
+    port = listen_port;
+    budget_ms = update_budget_ms < 1 ? 1 : update_budget_ms > 16 ? 16 : update_budget_ms;
+    max_per_update = requests_per_update < 1 ? 1 : requests_per_update > 1024 ? 1024 : requests_per_update;
+    stopping = 0;
     InitializeCriticalSection(&lock);
-    plugin->userdata = NULL;
-    plugin->on_update = update;
-    plugin->on_shutdown = shutdown_plugin;
-    read_settings();
+    started = 1; /* from here on, archipelago_bridge_stop() cleans up */
     result_buffer = (char *)malloc(MAX_RESULT);
     wake_event = CreateEventW(NULL, FALSE, FALSE, NULL);
     WSADATA wsa;
     if (result_buffer && wake_event && WSAStartup(MAKEWORD(2, 2), &wsa) == 0) winsock_started = 1;
     if (!winsock_started) {
         if (error && capacity) snprintf(error, capacity, "Could not initialize memory or Winsock.");
+        archipelago_bridge_stop();
         return 0;
     }
     listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -379,13 +371,15 @@ MERC_PLUGIN_EXPORT int MERC_PLUGIN_CALL MercenariesPlugin_Init(
     if (listener == INVALID_SOCKET || bind(listener, (struct sockaddr *)&address, sizeof(address)) != 0 ||
         listen(listener, 1) != 0) {
         if (error && capacity)
-            snprintf(error, capacity, "Could not listen on 127.0.0.1:%u (Winsock error %d). Change Port in bridge.ini.",
+            snprintf(error, capacity, "Could not listen on 127.0.0.1:%u (Winsock error %d). Change Port in archipelago.ini.",
                      port, WSAGetLastError());
+        archipelago_bridge_stop();
         return 0;
     }
     io_thread = CreateThread(NULL, 0, io_main, NULL, 0, NULL);
     if (!io_thread) {
         if (error && capacity) snprintf(error, capacity, "Could not start the network thread.");
+        archipelago_bridge_stop();
         return 0;
     }
     char text[128];
