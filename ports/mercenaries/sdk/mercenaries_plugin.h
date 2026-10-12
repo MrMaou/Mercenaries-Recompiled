@@ -2,7 +2,11 @@
 #define MERCENARIES_PLUGIN_H
 #include <stdint.h>
 #include <stddef.h>
+/* A plugin declares the interface it needs with ApiVersion= in mod.ini; the
+ * host then reports that same value in every api_version field it passes to
+ * the plugin, and expects it back in MercPlugin.api_version. */
 #define MERCENARIES_PLUGIN_API_VERSION 1u
+#define MERCENARIES_PLUGIN_API_VERSION_2 2u
 #define MERC_PLUGIN_CALL __cdecl
 #define MERC_PLUGIN_EXPORT __declspec(dllexport)
 #ifdef __cplusplus
@@ -24,6 +28,35 @@ typedef struct MercPluginHost {
     int (MERC_PLUGIN_CALL *read_guest)(void *, uint32_t, void *, size_t);
     int (MERC_PLUGIN_CALL *write_guest)(void *, uint32_t, const void *, size_t);
 } MercPluginHost;
+
+/* ---- Interface 2 (fork extension) -------------------------------------
+ * run_lua compiles and runs Lua 5.0 source in the game's master script VM, with
+ * the retail luaL_loadbuffer/lua_pcall. The chunk receives no arguments; its
+ * first return value is converted to text and copied to `out`.
+ *
+ * Call it only from inside on_update. It runs synchronously on the guest thread
+ * and the game does not advance while it runs, so keep chunks small.
+ *
+ * Result conversion: string -> bytes, number -> "%.17g", boolean -> "true" or
+ * "false", nil or no value -> "". Other types give MERC_LUA_BAD_RESULT.
+ *
+ * *out_length (optional) receives the full result length. If it is >= capacity
+ * the text in `out` is truncated (still NUL terminated when capacity > 0).
+ * On MERC_LUA_ERROR, `out` holds the Lua error message instead. */
+enum {
+    MERC_LUA_OK = 0,
+    MERC_LUA_ERROR = 1,       /* Compile or runtime error; message in out. */
+    MERC_LUA_NOT_READY = 2,   /* No master VM yet, or a script transition is pending. */
+    MERC_LUA_REJECTED = 3,    /* Wrong thread/context, outside on_update, or nested call. */
+    MERC_LUA_NO_MEMORY = 4,   /* Guest heap could not hold the source text. */
+    MERC_LUA_BAD_RESULT = 5   /* First return value was a table/function/userdata/thread. */
+};
+typedef struct MercPluginHost2 {
+    MercPluginHost v1;
+    int (MERC_PLUGIN_CALL *run_lua)(void *context, const char *source, size_t source_length,
+                                    char *out, size_t capacity, size_t *out_length);
+} MercPluginHost2;
+
 typedef struct MercPlugin {
     uint32_t struct_size, api_version;
     void *userdata;
@@ -33,6 +66,9 @@ typedef struct MercPlugin {
 /* Export with C linkage. Different from the legacy MercenariesMod_Init ABI.
  * Return 1 on success, 0 on failure; error is UTF-8/NUL terminated.
  * Fill callbacks/userdata. A supplied shutdown callback is also called if init fails.
+ * With ApiVersion=2 the host pointer is really a MercPluginHost2: check
+ * host->api_version == 2 and host->struct_size >= sizeof(MercPluginHost2)
+ * before casting.
  */
 typedef int (MERC_PLUGIN_CALL *MercPluginEntry)(const MercPluginHost *,
     MercPlugin *, char *, uint32_t);
@@ -44,4 +80,3 @@ MERC_PLUGIN_EXPORT int MERC_PLUGIN_CALL MercenariesPlugin_Init(
 }
 #endif
 #endif
-

@@ -157,7 +157,7 @@ def main():
   checks+=['update failure stops transitive dependents, unrelated plugins continue','failed init rollback']
   run(p,'stage','Beta',code=2,contains='Requires enabled plugin')
   run(p,'stage','Beta','Alpha',code=2,contains='Move required plugin')
-  for name,extra,needle in [('api','ApiVersion=2\n','unsupported Plugin Interface'),('duplicate','Id=alpha\n','Duplicate [Plugin] key'),('unknown','Mystery=1\n','Unknown [Plugin] key'),('traversal','Library=../fixture.dll\n','relative .dll path'),('missing','Library=missing.dll\n','missing DLL')]:
+  for name,extra,needle in [('api','ApiVersion=3\n','unsupported Plugin Interface'),('duplicate','Id=alpha\n','Duplicate [Plugin] key'),('unknown','Mystery=1\n','Unknown [Plugin] key'),('traversal','Library=../fixture.dll\n','relative .dll path'),('missing','Library=missing.dll\n','missing DLL')]:
    q=fixture(name);path=plugin(q,'Alpha','alpha')
    text=(path/'mod.ini').read_text()
    if name in ['api','traversal','missing']:

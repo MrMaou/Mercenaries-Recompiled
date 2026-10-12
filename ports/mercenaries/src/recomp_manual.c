@@ -3392,6 +3392,7 @@ float recomp_options_camera_fov(uint32_t camera, float fov)
 #include "dev_factions_guest.h"
 #include "dev_mission_guest.h"
 #include "mod_gameplay_guest.h"
+#include "plugin_lua_guest.h"
 #include "boids_guest.h"
 #include "freecam_streaming.h"
 #include "cargo_helicopters.h"

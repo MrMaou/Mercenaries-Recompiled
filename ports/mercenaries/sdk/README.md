@@ -192,3 +192,30 @@ Authors must replace their bootstrap/detours with the entry point and callbacks.
 Test fresh settings, repeated launches, changed load orders, disabled/vanilla runs,
 paused gameplay and normal shutdown before distributing a plugin.
 
+
+## Interface 2 (fork extension): run_lua
+
+Declare `ApiVersion=2` in `mod.ini` to receive a `MercPluginHost2`. It contains
+every v1 member unchanged, followed by:
+
+~~~c
+int run_lua(void *context, const char *source, size_t source_length,
+            char *out, size_t capacity, size_t *out_length);
+~~~
+
+`run_lua` compiles and runs Lua 5.0 source in the master script VM through the
+retail `luaL_loadbuffer` and `lua_pcall`, the same path the recomp uses for its
+optional mod script API. Call it only inside `on_update`; anywhere else it
+returns `MERC_LUA_REJECTED`. The chunk's first return value is converted to
+text: strings as-is, numbers with `%.17g`, booleans as `true`/`false`, nil as
+an empty string. Other types return `MERC_LUA_BAD_RESULT`. A compile or runtime
+error returns `MERC_LUA_ERROR` with the message in `out`. No VM or a pending
+script transition returns `MERC_LUA_NOT_READY`; retry on a later update.
+
+The game does not advance while a chunk runs. Keep chunks small and avoid
+loops that wait for game state. Plugin errors are not routed to the HQ
+script-error recovery.
+
+With `ApiVersion=2`, every `api_version` field the host passes (host, update)
+is 2, and the plugin must leave `MercPlugin.api_version` at 2. v1 plugins are
+unaffected: they still see a v1-sized host structure and version 1.

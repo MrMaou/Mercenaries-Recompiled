@@ -7,12 +7,16 @@
 #include <cstdio>
 #include <cstring>
 
+/* Implemented beside the other guest Lua adapters in recomp_manual.c. */
+extern "C" int recomp_plugin_run_lua(const char *source,size_t source_length,
+    char *out,size_t capacity,size_t *out_length);
+
 namespace {
 using namespace mercplugins;
 struct Loaded {
     Manifest manifest;
     HMODULE module=nullptr;
-    MercPluginHost host{};
+    MercPluginHost2 host{};
     MercPlugin callbacks{};
     std::string directory,settings;
     bool entered=false,active=false;
@@ -73,6 +77,16 @@ int MERC_PLUGIN_CALL write_guest(void *ctx,uint32_t address,const void *data,siz
     if(!data||!span(ctx,address,bytes,true)||!accessible(const_cast<void*>(data),bytes,false))return 0;
     memmove(static_cast<unsigned char*>(guest)+address,data,bytes);return 1;
 }
+int MERC_PLUGIN_CALL run_lua(void *ctx,const char *source,size_t length,char *out,size_t capacity,size_t *out_length) {
+    if(out_length)*out_length=0;
+    if(out&&capacity)out[0]=0;
+    // Only the plugin currently inside on_update may run script; init/shutdown are too early/late.
+    if(GetCurrentThreadId()!=owner||!calling||ctx!=calling||!dispatching||
+       calling->manifest.api_version<2||!source||(capacity&&!out))return MERC_LUA_REJECTED;
+    if(length>0x100000u)return MERC_LUA_NO_MEMORY;
+    if(capacity&&!accessible(out,capacity,true))return MERC_LUA_REJECTED;
+    return recomp_plugin_run_lua(source,length,out,capacity,out_length);
+}
 void shutdown_all() {
     for(auto it=loaded.rbegin();it!=loaded.rend();++it) {
         auto &p=**it;
@@ -120,9 +134,12 @@ extern "C" int merc_plugins_initialize(void *base,size_t bytes) {
             auto p=std::make_unique<Loaded>();p->manifest=m;
             p->directory=utf8(m.root.wstring());p->settings=utf8((fs::path(settings)/wide(m.id)).wstring());
             fs::create_directories(fs::path(wide(p->settings)));
-            p->host={sizeof(MercPluginHost),MERCENARIES_PLUGIN_API_VERSION,p.get(),
+            const uint32_t api=m.api_version;
+            // v1 plugins see exactly the v1 host structure; v2 adds run_lua after it.
+            p->host.v1={api>=2?uint32_t(sizeof(MercPluginHost2)):uint32_t(sizeof(MercPluginHost)),api,p.get(),
                 p->manifest.id.c_str(),p->directory.c_str(),p->settings.c_str(),plugin_log,read_guest,write_guest};
-            p->callbacks.struct_size=sizeof(MercPlugin);p->callbacks.api_version=MERCENARIES_PLUGIN_API_VERSION;
+            p->host.run_lua=api>=2?run_lua:nullptr;
+            p->callbacks.struct_size=sizeof(MercPlugin);p->callbacks.api_version=api;
             auto library=m.root/wide(m.library);
             // Own directory for dependencies; no working-directory or PATH search.
             p->module=LoadLibraryExW(library.c_str(),nullptr,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_SYSTEM32);
@@ -133,10 +150,10 @@ extern "C" int merc_plugins_initialize(void *base,size_t bytes) {
             if(!entry)throw std::runtime_error(m.name+": DLL does not export MercenariesPlugin_Init.");
             char error[1024]={};plugin.entered=true;calling=&plugin;
             int ok=0;
-            try {ok=entry(&plugin.host,&plugin.callbacks,error,sizeof(error));}
+            try {ok=entry(&plugin.host.v1,&plugin.callbacks,error,sizeof(error));}
             catch(...) {calling=nullptr;throw std::runtime_error(m.name+": initialization threw an exception.");}
             calling=nullptr;error[sizeof(error)-1]=0;
-            if(plugin.callbacks.struct_size!=sizeof(MercPlugin)||plugin.callbacks.api_version!=MERCENARIES_PLUGIN_API_VERSION) {
+            if(plugin.callbacks.struct_size!=sizeof(MercPlugin)||plugin.callbacks.api_version!=plugin.manifest.api_version) {
                 plugin.entered=false;
                 throw std::runtime_error(m.name+": invalid plugin callback ABI.");
             }
@@ -164,6 +181,7 @@ extern "C" int merc_plugins_update(void) {
         }
         if(!p.callbacks.on_update)continue;
         calling=&p;int ok=0;
+        update.api_version=p.manifest.api_version;
         try {ok=p.callbacks.on_update(p.callbacks.userdata,&update);}catch(...) {ok=0;}
         calling=nullptr;
         if(!ok) {
