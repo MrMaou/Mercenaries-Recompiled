@@ -1,5 +1,6 @@
 /* Opt-in telemetry: existing completed-frame history, no GPU readbacks. */
 #include "dev_overlay.h"
+#include "plugin_host.h"
 #include "dev_menu.h"
 #include "free_cam.h"
 #include "d3d8_internal.h"
@@ -62,4 +63,6 @@ static void paint(void){
     }
     d3d8_CompositeHostOverlay(pixels,W,H,12,12,960,540);
 }
-void recomp_dev_overlay_init(void){d3d8_SetHostOverlayCallback(paint);}
+/* The device has one host overlay callback: the developer graph, then plugin overlays. */
+static void paint_all(void){paint();merc_plugins_paint_overlays();}
+void recomp_dev_overlay_init(void){d3d8_SetHostOverlayCallback(paint_all);}

@@ -10,6 +10,9 @@
 /* Implemented beside the other guest Lua adapters in recomp_manual.c. */
 extern "C" int recomp_plugin_run_lua(const char *source,size_t source_length,
     char *out,size_t capacity,size_t *out_length);
+/* d3d8_internal.h; composites premultiplied BGRA into the next presented frame. */
+extern "C" BOOL d3d8_CompositeHostOverlay(const void *pixels,UINT width,UINT height,
+    UINT x,UINT y,UINT logical_width,UINT logical_height);
 
 namespace {
 using namespace mercplugins;
@@ -20,13 +23,23 @@ struct Loaded {
     MercPlugin callbacks{};
     std::string directory,settings;
     bool entered=false,active=false;
+    MercPluginCallback paint=nullptr;
+    void *paint_userdata=nullptr;
 };
+struct Hotkey {
+    Loaded *plugin;
+    MercPluginCallback callback;
+    void *userdata;
+};
+std::map<uint32_t,Hotkey> hotkeys;
+constexpr uint32_t OVERLAY_WIDTH=960,OVERLAY_HEIGHT=540;
 std::vector<std::unique_ptr<Loaded>> loaded;
 DWORD owner=0;
 void *guest=nullptr;
 size_t guest_size=0;
 Loaded *calling=nullptr;
-bool dispatching=false,initialized=false;
+bool dispatching=false,initialized=false,painting=false,ui_callback=false;
+void *host_window=nullptr;
 ULONGLONG previous=0;
 uint64_t sequence=0;
 std::string failure;
@@ -65,7 +78,7 @@ bool accessible(void *address,size_t bytes,bool write) {
     }return true;
 }
 bool span(void *ctx,uint32_t address,size_t bytes,bool write) {
-    return GetCurrentThreadId()==owner&&calling&&ctx==calling&&guest&&bytes&&
+    return GetCurrentThreadId()==owner&&calling&&ctx==calling&&!painting&&!ui_callback&&guest&&bytes&&
         address>=0x10000u&&address<guest_size&&bytes<=guest_size-address&&
         accessible(static_cast<unsigned char*>(guest)+address,bytes,write);
 }
@@ -87,6 +100,35 @@ int MERC_PLUGIN_CALL run_lua(void *ctx,const char *source,size_t length,char *ou
     if(capacity&&!accessible(out,capacity,true))return MERC_LUA_REJECTED;
     return recomp_plugin_run_lua(source,length,out,capacity,out_length);
 }
+bool ui_call_allowed(void *ctx) {
+    return GetCurrentThreadId()==owner&&calling&&ctx==calling&&!painting&&!ui_callback&&
+        calling->manifest.api_version>=2;
+}
+int MERC_PLUGIN_CALL register_hotkey(void *ctx,uint32_t key,MercPluginCallback callback,void *userdata) {
+    if(!ui_call_allowed(ctx)||!callback||!key||key>0xFE)return 0;
+    if(key>=VK_F8&&key<=VK_F11)return 0; // recomp diagnostics and controls
+    auto found=hotkeys.find(key);
+    if(found!=hotkeys.end()&&found->second.plugin!=calling)return 0;
+    hotkeys[key]=Hotkey{calling,callback,userdata};
+    record(calling->manifest.id+": registered hotkey 0x"+[&]{char b[8];snprintf(b,sizeof(b),"%02X",key);return std::string(b);}());
+    return 1;
+}
+int MERC_PLUGIN_CALL set_overlay(void *ctx,MercPluginCallback paint,void *userdata) {
+    if(!ui_call_allowed(ctx))return 0;
+    calling->paint=paint;calling->paint_userdata=paint?userdata:nullptr;
+    return 1;
+}
+int MERC_PLUGIN_CALL draw_overlay(void *ctx,const void *pixels,uint32_t width,uint32_t height,uint32_t x,uint32_t y) {
+    if(GetCurrentThreadId()!=owner||!painting||!calling||ctx!=calling||!pixels||!width||!height||
+       width>OVERLAY_WIDTH||height>OVERLAY_HEIGHT||x>OVERLAY_WIDTH-width||y>OVERLAY_HEIGHT-height||
+       !accessible(const_cast<void*>(pixels),size_t(width)*height*4u,false))return 0;
+    return d3d8_CompositeHostOverlay(pixels,width,height,x,y,OVERLAY_WIDTH,OVERLAY_HEIGHT)?1:0;
+}
+void disable_after_exception(Loaded &p,const char *where) {
+    p.active=false;p.paint=nullptr;
+    for(auto it=hotkeys.begin();it!=hotkeys.end();)it=it->second.plugin==&p?hotkeys.erase(it):std::next(it);
+    record(p.manifest.name+": "+where+" threw an exception; plugin disabled.");
+}
 void shutdown_all() {
     for(auto it=loaded.rbegin();it!=loaded.rend();++it) {
         auto &p=**it;
@@ -98,14 +140,15 @@ void shutdown_all() {
         }
         if(p.module)FreeLibrary(p.module);
     }
-    loaded.clear();guest=nullptr;guest_size=0;initialized=false;dispatching=false;
+    hotkeys.clear();
+    loaded.clear();guest=nullptr;guest_size=0;initialized=false;dispatching=false;painting=false;host_window=nullptr;
     if(log_file)log_file.close();
 }
 }
 extern "C" const char *merc_plugins_error(void) {return failure.c_str();}
-extern "C" int merc_plugins_initialize(void *base,size_t bytes) {
+extern "C" int merc_plugins_initialize(void *base,size_t bytes,void *window) {
     if(initialized){failure="Plugin host was initialized twice.";return 0;}
-    owner=GetCurrentThreadId();guest=base;guest_size=std::min<size_t>(bytes,0x4000000u);
+    owner=GetCurrentThreadId();guest=base;guest_size=std::min<size_t>(bytes,0x4000000u);host_window=window;
     sequence=0;failure.clear();
     try {
         auto path=environment(L"MERCENARIES_PLUGIN_LIST");
@@ -139,6 +182,10 @@ extern "C" int merc_plugins_initialize(void *base,size_t bytes) {
             p->host.v1={api>=2?uint32_t(sizeof(MercPluginHost2)):uint32_t(sizeof(MercPluginHost)),api,p.get(),
                 p->manifest.id.c_str(),p->directory.c_str(),p->settings.c_str(),plugin_log,read_guest,write_guest};
             p->host.run_lua=api>=2?run_lua:nullptr;
+            p->host.window=api>=2?host_window:nullptr;
+            p->host.register_hotkey=api>=2?register_hotkey:nullptr;
+            p->host.set_overlay=api>=2?set_overlay:nullptr;
+            p->host.draw_overlay=api>=2?draw_overlay:nullptr;
             p->callbacks.struct_size=sizeof(MercPlugin);p->callbacks.api_version=api;
             auto library=m.root/wide(m.library);
             // Own directory for dependencies; no working-directory or PATH search.
@@ -192,6 +239,28 @@ extern "C" int merc_plugins_update(void) {
         }
     }
     dispatching=false;return failure.empty()?1:0;
+}
+extern "C" int merc_plugins_hotkey(unsigned key) {
+    if(!initialized||GetCurrentThreadId()!=owner||calling||painting)return 0;
+    auto found=hotkeys.find(key);
+    if(found==hotkeys.end()||!found->second.plugin->active)return 0;
+    auto hotkey=found->second;
+    calling=hotkey.plugin;ui_callback=true;
+    try {hotkey.callback(hotkey.userdata);}
+    catch(...) {calling=nullptr;ui_callback=false;disable_after_exception(*hotkey.plugin,"hotkey");return 1;}
+    calling=nullptr;ui_callback=false;return 1;
+}
+extern "C" void merc_plugins_paint_overlays(void) {
+    if(!initialized||GetCurrentThreadId()!=owner||calling||painting)return;
+    painting=true;
+    for(auto &entry:loaded) {
+        auto &p=*entry;
+        if(!p.active||!p.paint)continue;
+        calling=&p;
+        try {p.paint(p.paint_userdata);}catch(...) {calling=nullptr;disable_after_exception(p,"overlay paint");}
+        calling=nullptr;
+    }
+    painting=false;
 }
 extern "C" void merc_plugins_shutdown(void) {
     if(GetCurrentThreadId()!=owner||dispatching)return;

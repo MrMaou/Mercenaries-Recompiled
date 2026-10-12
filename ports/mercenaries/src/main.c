@@ -945,6 +945,9 @@ static LRESULT CALLBACK host_window_proc(HWND hwnd, UINT message,
             preview_snapshot("USER-MARKER-F8");
             return 0;
         }
+        /* Plugin hotkeys (interface 2); F8-F11 above are never offered to plugins. */
+        if (!(lparam & (1L << 30)) && merc_plugins_hotkey((unsigned)wparam))
+            return 0;
         break;
     case WM_CLOSE:
         xbox_preview_log_event("session", "window close requested");
@@ -2168,7 +2171,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         getenv("MERCENARIES_TRACE_UPDATE_ICALL") != NULL ||
         getenv("MERCENARIES_TRACE_TRANSITION_POOL_COUNT") != NULL ||
         getenv("MERCENARIES_TRACE_REDSCENE_WRITE_WATCH") != NULL;
-    if (!merc_plugins_initialize(xbox_GetMemoryBase(), 0x04000000u)) {
+    if (!merc_plugins_initialize(xbox_GetMemoryBase(), 0x04000000u, g_host_window)) {
         merc_plugins_show_error();
         return 1;
     }

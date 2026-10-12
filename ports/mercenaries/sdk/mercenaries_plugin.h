@@ -51,10 +51,34 @@ enum {
     MERC_LUA_NO_MEMORY = 4,   /* Guest heap could not hold the source text. */
     MERC_LUA_BAD_RESULT = 5   /* First return value was a table/function/userdata/thread. */
 };
+/* Interface 2 UI facilities. Everything below runs on the guest owner thread:
+ * the host pumps window messages and presents frames from that thread.
+ *
+ * window          The game's top-level HWND, valid until shutdown. Use it as the
+ *                 owner of plugin windows. Do not subclass or restyle it.
+ * register_hotkey Call during init or on_update. callback runs on a non-repeat
+ *                 WM_KEYDOWN of virtual_key while the game window has focus.
+ *                 F8-F11 are reserved by the recomp; one plugin per key.
+ *                 Returns 1 on success. read_guest/run_lua are rejected inside
+ *                 the callback: queue work for the next on_update.
+ * set_overlay     Call during init or on_update. paint runs once per presented
+ *                 frame; pass NULL to remove it.
+ * draw_overlay    Only inside paint. Composites premultiplied BGRA pixels at
+ *                 (x, y) in a 960x540 logical canvas scaled to the window.
+ *                 All overlays share one GPU texture that is resized to the
+ *                 latest image, so draw at most one image per frame and skip the
+ *                 call entirely when nothing is visible. */
+typedef void (MERC_PLUGIN_CALL *MercPluginCallback)(void *userdata);
 typedef struct MercPluginHost2 {
     MercPluginHost v1;
     int (MERC_PLUGIN_CALL *run_lua)(void *context, const char *source, size_t source_length,
                                     char *out, size_t capacity, size_t *out_length);
+    void *window;
+    int (MERC_PLUGIN_CALL *register_hotkey)(void *context, uint32_t virtual_key,
+                                            MercPluginCallback callback, void *userdata);
+    int (MERC_PLUGIN_CALL *set_overlay)(void *context, MercPluginCallback paint, void *userdata);
+    int (MERC_PLUGIN_CALL *draw_overlay)(void *context, const void *bgra_premultiplied,
+                                         uint32_t width, uint32_t height, uint32_t x, uint32_t y);
 } MercPluginHost2;
 
 typedef struct MercPlugin {

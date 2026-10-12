@@ -28,7 +28,7 @@ int wmain(int argc,wchar_t**argv) {
     assert(ram);*(uint32_t*)(ram+0x10000)=0x48454258;
     DWORD old;assert(VirtualProtect(ram+0x30000,4096,PAGE_READONLY,&old));
     assert(VirtualProtect(ram+0x40000,4096,PAGE_NOACCESS,&old));
-    if(!merc_plugins_initialize(ram,0x4000000)) {
+    if(!merc_plugins_initialize(ram,0x4000000,NULL)) {
         fprintf(stderr,"%s\n",merc_plugins_error());VirtualFree(ram,0,MEM_RELEASE);return 3;
     }
     auto thread=CreateThread(nullptr,0,worker,nullptr,0,nullptr);

@@ -219,3 +219,23 @@ script-error recovery.
 With `ApiVersion=2`, every `api_version` field the host passes (host, update)
 is 2, and the plugin must leave `MercPlugin.api_version` at 2. v1 plugins are
 unaffected: they still see a v1-sized host structure and version 1.
+
+### Interface 2 UI: window, hotkeys and overlays
+
+`MercPluginHost2` also carries:
+
+| Member | Use |
+| --- | --- |
+| `window` | The game's top-level `HWND`. Use it as the owner of plugin windows (a tool panel, for example). Do not subclass or restyle it. |
+| `register_hotkey(ctx, vk, callback, userdata)` | During init or `on_update`. The callback runs on a non-repeat `WM_KEYDOWN` of `vk` while the game window has focus. F8-F11 are reserved, and each key belongs to one plugin. |
+| `set_overlay(ctx, paint, userdata)` | During init or `on_update`. `paint` runs once per presented frame; `NULL` removes it. |
+| `draw_overlay(ctx, pixels, w, h, x, y)` | Only inside `paint`. Composites premultiplied BGRA at `(x, y)` in a 960x540 logical canvas, scaled to the window. |
+
+The host pumps window messages and presents frames on the guest owner thread,
+so plugin window procedures, hotkey callbacks and `paint` all run on that thread
+too. `read_guest`, `write_guest` and `run_lua` are rejected inside hotkey and
+paint callbacks; record what to do and act on it in the next `on_update`.
+
+Overlays from all plugins and the developer FPS graph share one GPU texture,
+which is resized to each image. Draw at most one image per frame, and skip the
+call when nothing is visible, to avoid resizing it every frame.
