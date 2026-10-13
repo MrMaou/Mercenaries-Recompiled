@@ -35,9 +35,7 @@ The panel saves the server, slot and password in
 - **Goal:** sent when you verify the Ace of the goal chapter.
 - **Bounties:** blueprints, treasures, listening posts and monuments, counted
   from the scribble memory key the game writes for each one collected or
-  destroyed (so they survive reloads and count both maps). The game has 55
-  listening posts and 20 monuments; the apworld's 56th and 21st checks (only
-  with `all` or a number) cannot be reached here.
+  destroyed (so they survive reloads and count both maps).
 
 Game changes go through Lua in the game's script VM (the runtime from mercs-ap
 `recomp_runtime.py`, embedded in `src/ap_data.inc`).
