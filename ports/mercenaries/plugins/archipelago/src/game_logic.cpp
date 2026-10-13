@@ -93,6 +93,7 @@ std::string GameLogic::lua(const std::string &source) {
     case LuaStatus::NotReady:
       throw GameError("The game script VM is not ready.");
     case LuaStatus::Error:
+      if (result.text.find("not enough memory") != std::string::npos) collect_garbage();
       throw GameError("Lua error: " + result.text);
     default:
       throw GameError("Lua request failed (status " + std::to_string(int(result.status)) + ")");
@@ -119,12 +120,26 @@ bool GameLogic::in_gameplay() {
          transition == 0;
 }
 
+void GameLogic::collect_garbage() {
+  // The game's Lua heap is small, and Lua 5.0 does not collect garbage when an
+  // allocation fails, so a full heap keeps failing until something collects.
+  LuaResult result = io_.lua("collectgarbage() return gcinfo()");
+  if (!warned_memory_ && log_) {
+    log_(result.status == LuaStatus::Ok
+             ? "The game's script memory was full; collected garbage (now " + result.text + " KB in use)."
+             : "The game's script memory is full, and collecting garbage failed: " + result.text);
+    warned_memory_ = true;
+  }
+}
+
 void GameLogic::validate() {
+  if (batching_ && validated_) return;
   if (!in_gameplay()) throw GameError("Game is not in normal gameplay.");
   uint32_t vm = read_u32(VM_POINTER);
   std::string version = lua("return AP_Version and AP_Version() or \"\"");
   if (version != apdata::RUNTIME_VERSION || !installed_vm_ || *installed_vm_ != vm) inject(vm);
   if (expected_stamp_) check_save();
+  validated_ = true;
 }
 
 //// Save binding ////
@@ -156,6 +171,7 @@ void GameLogic::forget_applied() {
   intel_value_.reset();
   floors_.clear();
   shop_names_.reset();
+  shop_templates_.clear();
   shop_txn_ = 0;
   call("AP_ForgetApplied");
 }
@@ -228,6 +244,7 @@ void GameLogic::inject(uint32_t vm) {
   intel_value_.reset();
   floors_.clear();
   shop_names_.reset();
+  shop_templates_.clear();
   shop_txn_ = 0;
 }
 
@@ -506,10 +523,34 @@ bool GameLogic::send_once(int64_t money, const std::string &message, const std::
   return true;
 }
 
+const std::map<std::string, std::string> &GameLogic::shop_templates() {
+  // The game's VM has no string library, so template names are matched here,
+  // ignoring case, against the shop's own table. Cached per VM once non-empty.
+  if (shop_templates_.empty()) {
+    std::istringstream lines(call("AP_ShopTable"));
+    std::string line;
+    while (std::getline(lines, line)) {
+      auto eq = line.find('=');
+      if (eq == std::string::npos) continue;
+      std::string exact = line.substr(eq + 1), lower = exact;
+      if (exact.empty() || exact == "nil") continue;
+      std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+      shop_templates_[lower] = exact;
+    }
+  }
+  return shop_templates_;
+}
+
 void GameLogic::set_unlocked_shop_items(const std::vector<std::string> &names, size_t txn) {
   if (shop_names_ && *shop_names_ == names && shop_txn_ == txn) return;
+  const auto &known = shop_templates();
   std::string list = "{";
-  for (size_t i = 0; i < names.size(); ++i) list += (i ? ", " : "") + lua_quote(names[i]);
+  for (size_t i = 0; i < names.size(); ++i) {
+    std::string wanted = "template_support_" + names[i], lower = wanted;
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+    auto found = known.find(lower);
+    list += (i ? ", " : "") + lua_quote(found != known.end() ? found->second : wanted);
+  }
   list += "}";
   std::string result = call("AP_SetShop", list);
   if (result == "nohook") throw GameError("Shop_UnlockItem is not available yet.");

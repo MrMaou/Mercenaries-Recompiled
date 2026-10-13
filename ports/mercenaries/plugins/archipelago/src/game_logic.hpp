@@ -73,6 +73,11 @@ class GameLogic {
   // Game state (RecompIPC.py).
   bool in_gameplay();
   void validate();
+  // Between begin_sync() and end_sync() the game is validated only once, which
+  // halves the Lua chunks (and garbage) per sync. Without them, every call
+  // validates, as before.
+  void begin_sync() { batching_ = true, validated_ = false; }
+  void end_sync() { batching_ = false, validated_ = false; }
   std::string shop_table();
   int poll_blocked_shop() const { return blocked_shop_; }
 
@@ -107,6 +112,8 @@ class GameLogic {
                  const std::string &counts);
   void check_save();
   void forget_applied();
+  void collect_garbage();
+  const std::map<std::string, std::string> &shop_templates();
   // Runs one kind of item delivery; a GameError is logged (once per distinct
   // message) and does not stop the other kinds.
   template <typename Step> bool apply_step(const char *what, Step step);
@@ -140,6 +147,9 @@ class GameLogic {
   std::array<unsigned, 4> bounty_size_{};
   bool warned_bounties_ = false;
   std::map<std::string, std::string> step_errors_;  // last error logged per step
+  std::map<std::string, std::string> shop_templates_;  // lower-case -> exact, per VM
+  bool batching_ = false, validated_ = false;
+  bool warned_memory_ = false;
   int latest_chapter_ = 0;
   int blocked_shop_ = 0;
 };

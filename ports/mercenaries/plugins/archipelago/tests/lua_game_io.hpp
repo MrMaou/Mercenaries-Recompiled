@@ -17,10 +17,9 @@ extern "C" {
 class LuaGameIO : public ap::GameIO {
  public:
   explicit LuaGameIO(const std::string &stubs_path) : L(lua_open()) {
+    // Exactly what the game's VM has: base and table. No string, no math.
     luaopen_base(L);
     luaopen_table(L);
-    luaopen_string(L);
-    luaopen_math(L);
     if (luaL_loadfile(L, stubs_path.c_str()) || lua_pcall(L, 0, 0, 0))
       throw std::runtime_error(std::string("stubs: ") + lua_tostring(L, -1));
     lua_settop(L, 0);

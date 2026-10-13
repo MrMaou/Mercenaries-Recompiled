@@ -242,6 +242,32 @@ int main(int argc, char **argv) {
     tut.send_items(got, {}, options);
     check(tut_io.eval("TEST_dump(TEST_unlocked)") == "1=template_support_deliverH2", "refused unlock retried once the shop opens");
   }
+  // ---- Shop names are matched in the client, ignoring case --------------
+  {
+    LuaGameIO case_io(argv[1]);
+    case_io.lua("tMafiaShop = { { template = 'TEMPLATE_SUPPORT_DELIVERH2' } }");
+    ap::GameLogic shop(case_io);
+    enter_gameplay(case_io, 0x00200000);
+    shop.send_items({shop1->id, shop2->id}, {}, options);
+    check(case_io.eval("TEST_dump(TEST_unlocked)") ==
+              "1=TEMPLATE_SUPPORT_DELIVERH2,2=template_support_deliverH3",
+          "exact template from the shop table, prefix fallback otherwise");
+  }
+  // ---- A full script heap is collected, and reported once ---------------
+  {
+    LuaGameIO mem_io(argv[1]);
+    mem_io.lua("function gameflow_AttemptAceMissionUnlock() error('not enough memory') end");
+    std::vector<std::string> mem_log;
+    ap::GameLogic mem(mem_io, [&](const std::string &line) { mem_log.push_back(line); });
+    enter_gameplay(mem_io, 0x00200000);
+    mem.get_checks_and_hints({}, options);
+    ap::Counter record = mem.send_items({money->id, intel->id}, {}, options);
+    mem.send_items({money->id, intel->id}, record, options);  // no linked save: pass the record back
+    int collected = 0;
+    for (const auto &line : mem_log) collected += line.find("collected garbage") != std::string::npos;
+    check(collected == 1, "full script heap: garbage collected, reported once");
+    check(mem_io.eval("TEST_money") == std::to_string(1000 + money->money), "cash still delivered once");
+  }
   check(ap::GameLogic::save_stamp("12345", 0, 1) == ap::GameLogic::save_stamp("12345", 0, 1) &&
             ap::GameLogic::save_stamp("12345", 0, 1) != ap::GameLogic::save_stamp("12345", 0, 2) &&
             ap::GameLogic::save_stamp("12345", 0, 1) < (1u << 24) && ap::GameLogic::save_stamp("12345", 0, 1) != 0,

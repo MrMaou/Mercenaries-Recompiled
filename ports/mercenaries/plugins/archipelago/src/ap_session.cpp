@@ -280,6 +280,13 @@ void Session::poll(double now) {
 }
 
 void Session::sync() {
+  // Validate the game once for this whole sync (see GameLogic::begin_sync).
+  struct Batch {
+    GameLogic &logic;
+    explicit Batch(GameLogic &l) : logic(l) { logic.begin_sync(); }
+    ~Batch() { logic.end_sync(); }
+  } batch(logic_);
+
   // Send new items to the game.
   Counter sent = logic_.send_items(received_, sent_, options_);
   // A linked save carries its own delivery record; the server record is only
