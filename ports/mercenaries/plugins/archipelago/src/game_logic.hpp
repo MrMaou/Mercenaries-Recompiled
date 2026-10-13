@@ -107,6 +107,9 @@ class GameLogic {
                  const std::string &counts);
   void check_save();
   void forget_applied();
+  // Runs one kind of item delivery; a GameError is logged (once per distinct
+  // message) and does not stop the other kinds.
+  template <typename Step> bool apply_step(const char *what, Step step);
   void set_unlocked_shop_items(const std::vector<std::string> &names, size_t txn);
   void set_intel(double amount, double target);
   void set_reputation_floors(const std::map<std::string, double> &floors);
@@ -136,6 +139,7 @@ class GameLogic {
   std::array<uint32_t, 4> bounty_address_{};
   std::array<unsigned, 4> bounty_size_{};
   bool warned_bounties_ = false;
+  std::map<std::string, std::string> step_errors_;  // last error logged per step
   int latest_chapter_ = 0;
   int blocked_shop_ = 0;
 };

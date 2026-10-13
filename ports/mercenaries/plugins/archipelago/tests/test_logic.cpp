@@ -212,6 +212,36 @@ int main(int argc, char **argv) {
     fallback.send_items({money->id}, record, options);
     check(plain_io.eval("TEST_money") == std::to_string(1000 + money->money), "fallback does not pay twice");
   }
+  // ---- One failing item kind must not block the others (tutorial case) --
+  {
+    LuaGameIO tut_io(argv[1]);
+    // Before the shop exists: the game refuses unlocks. Intel's ace check throws too.
+    tut_io.lua("function Shop_UnlockItem(t) error('shop is not available yet') end");
+    tut_io.lua("function gameflow_AttemptAceMissionUnlock() error('no chapter yet') end");
+    std::vector<std::string> tut_log;
+    ap::GameLogic tut(tut_io, [&](const std::string &line) { tut_log.push_back(line); });
+    enter_gameplay(tut_io, 0x00200000);
+    tut.bind_save(4321);
+    tut.get_checks_and_hints({}, options);  // chapter known, so intel runs
+    std::vector<int64_t> got = {shop1->id, money->id};
+    tut.send_items(got, {}, options);
+    check(tut_io.eval("TEST_money") == std::to_string(1000 + money->money), "cash delivered while shop unlocks fail");
+    auto logged = [&](const char *text) {
+      int n = 0;
+      for (const auto &line : tut_log) n += line.find(text) != std::string::npos;
+      return n;
+    };
+    check(logged("Could not apply shop unlocks") == 1 && logged("shop is not available yet") == 1,
+          "shop failure logged with the game's reason");
+    check(logged("Could not apply intel") == 1, "intel failure logged");
+    tut.send_items(got, {}, options);
+    tut.send_items(got, {}, options);
+    check(logged("Could not apply shop unlocks") == 1, "same failure not logged again on retries");
+    check(tut_io.eval("TEST_money") == std::to_string(1000 + money->money), "cash still paid only once");
+    tut_io.lua("function Shop_UnlockItem(t) table.insert(TEST_unlocked, t) end");  // the shop opens
+    tut.send_items(got, {}, options);
+    check(tut_io.eval("TEST_dump(TEST_unlocked)") == "1=template_support_deliverH2", "refused unlock retried once the shop opens");
+  }
   check(ap::GameLogic::save_stamp("12345", 0, 1) == ap::GameLogic::save_stamp("12345", 0, 1) &&
             ap::GameLogic::save_stamp("12345", 0, 1) != ap::GameLogic::save_stamp("12345", 0, 2) &&
             ap::GameLogic::save_stamp("12345", 0, 1) < (1u << 24) && ap::GameLogic::save_stamp("12345", 0, 1) != 0,

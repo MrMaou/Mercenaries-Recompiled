@@ -363,20 +363,24 @@ Counter GameLogic::send_items(const std::vector<int64_t> &received, const Counte
   try {
     validate();
 
-    // Shop unlocks are idempotent: send the whole set.
-    std::vector<const apdata::Item *> unlocks;
-    for (const auto *item : items)
-      if (item->kind == apdata::ItemKind::ShopUnlock &&
-          std::find(unlocks.begin(), unlocks.end(), item) == unlocks.end())
-        unlocks.push_back(item);
-    std::sort(unlocks.begin(), unlocks.end(), [](auto *a, auto *b) { return a->tag < b->tag; });
-    std::vector<std::string> names;
-    for (const auto *item : unlocks) names.emplace_back(item->shop_template);
-    set_unlocked_shop_items(names, received.size());
+    // Each kind of item on its own: one the game refuses (say, a shop unlock
+    // before the shop exists) must not hold up the others, cash above all.
+    apply_step("shop unlocks", [&] {
+      std::vector<const apdata::Item *> unlocks;
+      for (const auto *item : items)
+        if (item->kind == apdata::ItemKind::ShopUnlock &&
+            std::find(unlocks.begin(), unlocks.end(), item) == unlocks.end())
+          unlocks.push_back(item);
+      std::sort(unlocks.begin(), unlocks.end(), [](auto *a, auto *b) { return a->tag < b->tag; });
+      std::vector<std::string> names;
+      for (const auto *item : unlocks) names.emplace_back(item->shop_template);
+      set_unlocked_shop_items(names, received.size());
+    });
 
     // Intel: total for the current chapter, scaled to the game's target of 80.
-    int chapter = current_chapter();
-    if (chapter >= 1) {
+    apply_step("intel", [&] {
+      int chapter = current_chapter();
+      if (chapter < 1) return;
       int suit = std::min(chapter, 4) - 1;
       double total = 0;
       for (const auto *item : items)
@@ -385,16 +389,18 @@ Counter GameLogic::send_items(const std::vector<int64_t> &received, const Counte
       double target = options.vanilla_intel ? options.vanilla_intel_target : options.intel_target;
       if (options.progressive_intel) total = std::max(0.0, total - target * (chapter - 1));
       set_intel(total, target);
-    }
+    });
 
     // Reputation floors: -50, then 0, then diminishing steps towards 100.
-    std::map<std::string, int> counts;
-    for (const auto *item : items)
-      if (item->kind == apdata::ItemKind::Reputation) ++counts[item->faction];
-    std::map<std::string, double> floors;
-    for (const auto &[faction, count] : counts)
-      floors[faction] = count <= 2 ? -100.0 + 50.0 * count : 100.0 - 100.0 * std::pow(0.9, count - 2);
-    set_reputation_floors(floors);
+    apply_step("reputation", [&] {
+      std::map<std::string, int> counts;
+      for (const auto *item : items)
+        if (item->kind == apdata::ItemKind::Reputation) ++counts[item->faction];
+      std::map<std::string, double> floors;
+      for (const auto &[faction, count] : counts)
+        floors[faction] = count <= 2 ? -100.0 + 50.0 * count : 100.0 - 100.0 * std::pow(0.9, count - 2);
+      set_reputation_floors(floors);
+    });
 
     // One-shot deliveries: all unsent money, one coupon, one message. A linked
     // save carries its own record; otherwise the caller's (server) record.
@@ -442,7 +448,11 @@ Counter GameLogic::send_items(const std::vector<int64_t> &received, const Counte
       save_counts += "}";
     }
     std::string message = messages_.empty() ? std::string() : messages_.front();
-    if (send_once(money_total, message, support_item, save_counts)) {
+    bool delivered = false;
+    apply_step("cash and free samples", [&] {
+      delivered = send_once(money_total, message, support_item, save_counts);
+    });
+    if (delivered) {
       if (!message.empty()) messages_.pop_front();
       if (linked) save_sent_ = new_sent;
       return new_sent;
@@ -450,6 +460,22 @@ Counter GameLogic::send_items(const std::vector<int64_t> &received, const Counte
     return base;
   } catch (const GameError &) {
     return old_sent;
+  }
+}
+
+template <typename Step>
+bool GameLogic::apply_step(const char *what, Step step) {
+  try {
+    step();
+    step_errors_.erase(what);
+    return true;
+  } catch (const SaveMismatch &) {
+    throw;  // handled by the caller: nothing at all may change
+  } catch (const GameError &e) {
+    std::string &last = step_errors_[what];
+    if (last != e.what() && log_) log_(std::string("Could not apply ") + what + " (will retry): " + e.what());
+    last = e.what();
+    return false;
   }
 }
 
@@ -487,7 +513,17 @@ void GameLogic::set_unlocked_shop_items(const std::vector<std::string> &names, s
   list += "}";
   std::string result = call("AP_SetShop", list);
   if (result == "nohook") throw GameError("Shop_UnlockItem is not available yet.");
-  if (!result.empty() && result != "0" && log_) log_("Unlocked " + result + " Merchant of Menace item(s).");
+  auto bar = result.find('|');
+  std::string applied = result.substr(0, bar);
+  if (!applied.empty() && applied != "0" && log_) log_("Unlocked " + applied + " Merchant of Menace item(s).");
+  // Refused unlocks are retried on the next sync; the rest are already applied.
+  if (bar != std::string::npos) {
+    std::string failed = result.substr(bar + 1);  // "template: error; template: error; ..."
+    size_t count = 1, at = 0;
+    while ((at = failed.find("; ", at)) != std::string::npos) ++count, at += 2;
+    std::string first = failed.substr(0, failed.find("; "));
+    throw GameError("the game refused " + std::to_string(count) + " unlock(s), first " + first);
+  }
   shop_names_ = names;
   shop_txn_ = txn;
 }
