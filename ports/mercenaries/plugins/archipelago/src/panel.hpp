@@ -34,6 +34,7 @@ class Panel {
  private:
   bool create();
   void layout();
+  void apply_connection_state();
   void on_connect_button();
   void on_send();
   int scale(int value) const { return MulDiv(value, dpi_, 96); }

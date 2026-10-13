@@ -84,7 +84,7 @@ bool Panel::create() {
   for (HWND field : {server_, slot_, password_, chat_, auto_connect_, connect_, send_})
     SetWindowSubclass(field, field_proc, 1, DWORD_PTR(this));
   layout();
-  set_connection(active_, narrow(status_text_));
+  apply_connection_state();  // state may have changed while the panel did not exist yet
   for (const auto &line : pending_log_) append_log(narrow(line));
   pending_log_.clear();
   return true;
@@ -150,7 +150,10 @@ void Panel::set_connection(bool active, const std::string &status) {
   bool changed = active != active_ || text != status_text_;
   active_ = active;
   status_text_ = std::move(text);
-  if (!window_ || !changed) return;
+  if (window_ && changed) apply_connection_state();
+}
+
+void Panel::apply_connection_state() {
   SetWindowTextW(status_, status_text_.c_str());
   SetWindowTextW(connect_, active_ ? L"Disconnect" : L"Connect");
   for (HWND field : {server_, slot_, password_}) EnableWindow(field, !active_);

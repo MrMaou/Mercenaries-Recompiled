@@ -94,7 +94,8 @@ CMake downloads the pinned header-only dependencies (APClientPP, wswrap,
 websocketpp 0.8.2, asio 1.28.2, nlohmann/json 3.12.0, zlib 1.3.1) and curl's CA
 bundle. The static triplet links OpenSSL into the DLL, so there are no extra
 DLLs to ship. `-DARCHIPELAGO_SSL=OFF` builds without OpenSSL; then only `ws://`
-servers work.
+servers work: an address without a scheme is treated as `ws://`, and `wss://`
+is refused with a message in the panel.
 
 ### Regenerating the data
 

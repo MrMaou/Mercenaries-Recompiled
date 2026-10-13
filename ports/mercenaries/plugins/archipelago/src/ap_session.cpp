@@ -1,10 +1,13 @@
 #include "ap_session.hpp"
 
 #include <apclient.hpp>
-#include <apuuid.hpp>
 
 #include <algorithm>
+#include <cctype>
+#include <filesystem>
+#include <fstream>
 #include <list>
+#include <random>
 
 namespace ap {
 namespace {
@@ -12,6 +15,35 @@ namespace {
 constexpr int ITEMS_HANDLING = 0b111;  // all items come from the server
 const APClient::Version CLIENT_VERSION{0, 6, 2};
 using json = nlohmann::json;
+
+// Persistent client UUID: 32 hex characters in a small text file.
+//
+// APClientPP's ap_get_uuid() is not used: UUIDFactory::generate() passes an
+// 8-byte array to a constructor that reads 16 bytes. Clang at -O1 and above
+// turns that undefined behaviour into an endless loop that writes off the end
+// of the stack (seen as a crash on the first connect).
+std::string load_or_create_uuid(const std::string &utf8_path) {
+  const auto path = std::filesystem::u8path(utf8_path);  // non-ASCII user folders on Windows
+  {
+    std::ifstream in(path, std::ios::binary);
+    std::string text;
+    if (in && std::getline(in, text)) {
+      if (text.size() == 32 && std::all_of(text.begin(), text.end(), [](unsigned char c) { return std::isxdigit(c); }))
+        return text;
+    }
+  }
+  std::random_device random;
+  const char hex[] = "0123456789abcdef";
+  std::string uuid;
+  for (int i = 0; i < 16; ++i) {
+    unsigned byte = random() & 0xFFu;
+    uuid += hex[byte >> 4];
+    uuid += hex[byte & 0xFu];
+  }
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  if (out) out << uuid << "\n";  // if this fails the UUID is per-session, which the server accepts
+  return uuid;
+}
 
 }  // namespace
 
@@ -26,8 +58,18 @@ void Session::connect(const SessionConfig &config) {
     message_(MessageKind::Error, "Enter a server and a slot name first.");
     return;
   }
+#ifdef WSWRAP_NO_SSL
+  // Without SSL, APClient would still try wss:// first for an address with no
+  // scheme. Go straight to ws://, and say plainly that wss:// cannot work.
+  if (config_.server.rfind("wss://", 0) == 0) {
+    state_text_ = "This build has no SSL support; wss:// servers are not available.";
+    message_(MessageKind::Error, state_text_);
+    return;
+  }
+  if (config_.server.find("://") == std::string::npos) config_.server = "ws://" + config_.server;
+#endif
   try {
-    std::string uuid = ap_get_uuid(config_.uuid_file, config_.server);
+    std::string uuid = load_or_create_uuid(config_.uuid_file);
     client_ = std::make_unique<APClient>(uuid, "Mercenaries", config_.server, config_.cert_store);
   } catch (const std::exception &e) {
     client_.reset();
