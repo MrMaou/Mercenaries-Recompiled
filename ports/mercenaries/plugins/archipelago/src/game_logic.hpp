@@ -35,6 +35,14 @@ struct SlotOptions {
   std::vector<std::pair<int64_t, int>> hints_from_cards;
 };
 
+// How one-shot items (cash, free samples) are tracked for the loaded save.
+enum class SaveState {
+  Unbound,      // no session: the caller's record is used
+  Linked,       // this save carries its own delivery record (scribble memory)
+  Unsupported,  // scribble memory did not keep our values: the caller's record is used
+  Mismatch,     // the save belongs to another seed/slot: nothing is changed
+};
+
 struct CheckResult {
   std::set<int64_t> found;                         // checked or auto-released
   std::set<std::pair<int64_t, int>> capture_hints;  // (location, player)
@@ -68,6 +76,13 @@ class GameLogic {
   std::string shop_table();
   int poll_blocked_shop() const { return blocked_shop_; }
 
+  // Save binding. bind_save() on slot connect; the first gameplay sync then
+  // stamps an unbound save, or checks the stamp of a bound one.
+  static uint32_t save_stamp(const std::string &seed, int team, int slot);
+  void bind_save(uint32_t stamp);
+  void unbind_save();
+  SaveState save_state() const { return save_state_; }
+
  private:
   struct Poll {
     std::array<std::array<int, 13>, 4> cards{};
@@ -88,7 +103,10 @@ class GameLogic {
   bool is_card_verified(int suit, int rank) const { return cards_[suit][rank - 1] > 1; }
   bool is_card_captured(int suit, int rank) const { return cards_[suit][rank - 1] > 2; }
 
-  bool send_once(int64_t money, const std::string &message, const std::string &support_item);
+  bool send_once(int64_t money, const std::string &message, const std::string &support_item,
+                 const std::string &counts);
+  void check_save();
+  void forget_applied();
   void set_unlocked_shop_items(const std::vector<std::string> &names, size_t txn);
   void set_intel(double amount, double target);
   void set_reputation_floors(const std::map<std::string, double> &floors);
@@ -104,7 +122,12 @@ class GameLogic {
   size_t shop_txn_ = 0;
   std::string delivery_prefix_;
   uint64_t next_delivery_ = 1;
-  std::optional<std::pair<std::string, std::tuple<int64_t, std::string, std::string>>> pending_delivery_;
+  std::optional<std::pair<std::string, std::tuple<int64_t, std::string, std::string, std::string>>> pending_delivery_;
+  std::optional<uint32_t> expected_stamp_;
+  SaveState save_state_ = SaveState::Unbound;
+  Counter save_sent_;
+  uint32_t tick_ = 0;
+  bool tick_written_ = false;
   std::deque<std::string> messages_;
 
   std::array<std::array<int, 13>, 4> cards_{};

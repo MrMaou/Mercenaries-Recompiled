@@ -87,6 +87,8 @@ void Session::connect(const SessionConfig &config) {
 void Session::disconnect() {
   if (client_) message_(MessageKind::Log, "Disconnected.");
   client_.reset();
+  logic_.unbind_save();
+  warned_save_mismatch_ = false;
   slot_connected_ = false;
   sent_loaded_ = false;
   goal_sent_ = false;
@@ -225,6 +227,10 @@ void Session::handle_slot_connected(SlotOptions options) {
   hintables_.clear();
   state_text_ = "Connected as " + config_.slot + ".";
   message_(MessageKind::Notice, "Connected to Archipelago as " + config_.slot + ".");
+  // Saves are bound to this seed, team and slot; see GameLogic::check_save().
+  logic_.bind_save(GameLogic::save_stamp(client_->get_seed(), client_->get_team_number(),
+                                         client_->get_player_number()));
+  warned_save_mismatch_ = false;
   // Ask for this slot's record of one-shot items already delivered to the game.
   client_->Set(sent_key(), json::object(), true, {{"default", json::object()}});
 }
@@ -259,6 +265,14 @@ void Session::poll(double now) {
   try {
     sync();
     next_sync_ = now + 1.0;
+    warned_save_mismatch_ = false;
+  } catch (const SaveMismatch &) {
+    state_text_ = "This save belongs to a different seed or slot. Load the right save, or start a new game.";
+    if (!warned_save_mismatch_) {
+      message_(MessageKind::Error, "Wrong save for this seed: nothing is sent or changed until you load the right save.");
+      warned_save_mismatch_ = true;
+    }
+    next_sync_ = now + 2.0;
   } catch (const GameError &e) {
     state_text_ = "Connected as " + config_.slot + ". Waiting for the game: " + e.what();
     next_sync_ = now + 4.0;
@@ -268,7 +282,9 @@ void Session::poll(double now) {
 void Session::sync() {
   // Send new items to the game.
   Counter sent = logic_.send_items(received_, sent_, options_);
-  if (sent != sent_) {
+  // A linked save carries its own delivery record; the server record is only
+  // kept for saves that cannot store it (and for the Python client).
+  if (logic_.save_state() != SaveState::Linked && sent != sent_) {
     json value = json::object();
     for (const auto &[id, count] : sent) value[std::to_string(id)] = count;
     client_->Set(sent_key(), json::object(), true, {{"replace", value}});
@@ -300,7 +316,9 @@ void Session::sync() {
 
   auto [checked, total] = location_progress();
   state_text_ = "Connected as " + config_.slot + ". " + std::to_string(checked) + "/" + std::to_string(total) +
-                " checks, chapter " + std::to_string(std::min(logic_.current_chapter(), 4)) + ".";
+                " checks, chapter " + std::to_string(std::min(logic_.current_chapter(), 4)) + "." +
+                (logic_.save_state() == SaveState::Linked ? " Save linked."
+                 : logic_.save_state() == SaveState::Unsupported ? " Save not linked (server record)." : "");
 }
 
 }  // namespace ap

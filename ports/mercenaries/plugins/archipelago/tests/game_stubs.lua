@@ -7,6 +7,11 @@ suit_sequence = { 'clubs', 'diamonds', 'hearts', 'spades' }
 function gameflow_GetCardScribbleMemoryVariableName(suit, rank) return 'card_' .. suit .. '_' .. rank end
 function Utility_ReadNumberFromScribbleMemory(k) return TEST_scribble[k] end
 function Utility_ReadStringFromScribbleMemory(k) return TEST_scribble[k] end
+TEST_scribble_writable = true
+function Utility_WriteNumberToScribbleMemory(k, v) if TEST_scribble_writable then TEST_scribble[k] = v end end
+-- A save is the scribble memory plus the money; loading restores both.
+function TEST_save() local copy = {} for k, v in pairs(TEST_scribble) do copy[k] = v end return {scribble = copy, money = TEST_money} end
+function TEST_load(save) TEST_scribble = {} for k, v in pairs(save.scribble) do TEST_scribble[k] = v end TEST_money = save.money end
 TEST_money = 1000
 function Player_GetMoney() return TEST_money end
 function Player_SetMoney(v) TEST_money = v end

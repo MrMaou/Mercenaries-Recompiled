@@ -36,9 +36,29 @@ The panel saves the server, slot and password in
 - **Bounties:** off until their counter addresses are known; see below.
 
 Game changes go through Lua in the game's script VM (the runtime from mercs-ap
-`recomp_runtime.py`, embedded in `src/ap_data.inc`). One-shot items (cash, free
-samples) are recorded per slot in the server's data storage, so a reconnect or a
-different client never delivers them twice.
+`recomp_runtime.py`, embedded in `src/ap_data.inc`).
+
+## Saves
+
+The client links each save to one seed and slot, and keeps its own delivery
+record inside the save (a few number keys in the game's scribble memory, which
+the game writes into the save file):
+
+- **New game:** the first sync stamps the save with the current seed and slot.
+  The panel status line then says "Save linked".
+- **Loading an older save:** the client notices (even if the script VM is not
+  rebuilt) and re-delivers exactly the cash and free samples that save is
+  missing. Checks already sent stay sent.
+- **Wrong save:** if the save belongs to another seed or slot, the client warns
+  once and changes nothing and sends nothing until you load the right save or
+  start a new game.
+- **Fallback:** if the save cannot keep the values, the status line says "Save
+  not linked" and the server's per-slot record is used, as before.
+
+Use the recomp's **Use separate saves** option in the mod selector to keep AP
+saves apart from your normal ones. Vanilla shop unlocks already in an old,
+non-AP save stay unlocked. The Python client does not use the save record;
+do not alternate between it and the in-game client on one save.
 
 ## Settings
 

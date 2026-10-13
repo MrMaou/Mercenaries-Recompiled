@@ -124,6 +124,97 @@ void GameLogic::validate() {
   uint32_t vm = read_u32(VM_POINTER);
   std::string version = lua("return AP_Version and AP_Version() or \"\"");
   if (version != apdata::RUNTIME_VERSION || !installed_vm_ || *installed_vm_ != vm) inject(vm);
+  if (expected_stamp_) check_save();
+}
+
+//// Save binding ////
+
+uint32_t GameLogic::save_stamp(const std::string &seed, int team, int slot) {
+  // FNV-1a, folded to 24 bits so it survives a float in scribble memory.
+  std::string key = seed + "|" + std::to_string(team) + "|" + std::to_string(slot);
+  uint32_t hash = 2166136261u;
+  for (unsigned char c : key) hash = (hash ^ c) * 16777619u;
+  hash = (hash ^ (hash >> 24)) & 0xFFFFFFu;
+  return hash ? hash : 1u;  // 0 means "unbound"
+}
+
+void GameLogic::bind_save(uint32_t stamp) {
+  expected_stamp_ = stamp;
+  save_state_ = SaveState::Unbound;
+  save_sent_.clear();
+  tick_written_ = false;
+}
+
+void GameLogic::unbind_save() {
+  expected_stamp_.reset();
+  save_state_ = SaveState::Unbound;
+  save_sent_.clear();
+  tick_written_ = false;
+}
+
+void GameLogic::forget_applied() {
+  intel_value_.reset();
+  floors_.clear();
+  shop_names_.reset();
+  shop_txn_ = 0;
+  call("AP_ForgetApplied");
+}
+
+void GameLogic::check_save() {
+  static const std::string ids = [] {
+    std::string list = "{";
+    for (const auto &item : apdata::ITEMS)
+      if (item.kind == apdata::ItemKind::Money || item.kind == apdata::ItemKind::Coupon)
+        list += std::to_string(item.id) + ",";
+    return list + "}";
+  }();
+  uint32_t next_tick = tick_ % 0xFFFFFFu + 1u;  // 1..2^24-1, exact in a float
+  std::string text = call("AP_SyncSave", ids + ", " + std::to_string(next_tick));
+  if (text.empty()) {
+    save_state_ = SaveState::Unsupported;
+    return;
+  }
+  uint32_t stamp = 0, tick = 0;
+  Counter counts;
+  std::istringstream lines(text);
+  std::string line;
+  while (std::getline(lines, line)) {
+    auto eq = line.find('=');
+    if (eq == std::string::npos) continue;
+    std::string key = line.substr(0, eq);
+    int value = to_int(line.substr(eq + 1));
+    if (key == "stamp") stamp = uint32_t(value);
+    else if (key == "tick") tick = uint32_t(value);
+    else counts[std::stoll(key)] = value;
+  }
+  // The tick read back differs from the one we wrote last: the save data was
+  // replaced (a save was loaded), even if the script VM was not rebuilt.
+  bool reloaded = tick_written_ && tick != tick_;
+  tick_ = next_tick;
+  tick_written_ = true;
+
+  if (stamp == 0) {
+    if (call("AP_StampSave", std::to_string(*expected_stamp_)) != "ok") {
+      if (save_state_ != SaveState::Unsupported && log_)
+        log_("This save cannot store Archipelago data; using the server's record instead.");
+      save_state_ = SaveState::Unsupported;
+      return;
+    }
+    if (log_) log_("Linked this save to the current seed and slot.");
+    save_state_ = SaveState::Linked;
+    save_sent_.clear();
+  } else if (stamp == *expected_stamp_) {
+    if (save_state_ != SaveState::Linked && log_) log_("This save belongs to the current seed and slot.");
+    save_state_ = SaveState::Linked;
+    save_sent_ = std::move(counts);
+  } else {
+    save_state_ = SaveState::Mismatch;
+    throw SaveMismatch("This save belongs to a different seed or slot.");
+  }
+  if (reloaded) {
+    if (log_) log_("A save was loaded; re-applying items to it.");
+    forget_applied();
+  }
 }
 
 void GameLogic::inject(uint32_t vm) {
@@ -305,15 +396,18 @@ Counter GameLogic::send_items(const std::vector<int64_t> &received, const Counte
       floors[faction] = count <= 2 ? -100.0 + 50.0 * count : 100.0 - 100.0 * std::pow(0.9, count - 2);
     set_reputation_floors(floors);
 
-    // One-shot deliveries: all unsent money, one coupon, one message.
-    Counter new_sent = old_sent;
+    // One-shot deliveries: all unsent money, one coupon, one message. A linked
+    // save carries its own record; otherwise the caller's (server) record.
+    const bool linked = save_state_ == SaveState::Linked;
+    const Counter &base = linked ? save_sent_ : old_sent;
+    Counter new_sent = base;
     Counter all_money;
     for (const auto *item : items)
       if (item->kind == apdata::ItemKind::Money) ++all_money[item->id];
     int64_t money_total = 0;
     for (const auto &[id, count] : all_money) {
-      auto previous = old_sent.find(id);
-      int unsent = count - (previous == old_sent.end() ? 0 : previous->second);
+      auto previous = base.find(id);
+      int unsent = count - (previous == base.end() ? 0 : previous->second);
       if (unsent > 0) money_total += item_by_id(id)->money * unsent;
       new_sent[id] = std::max(new_sent[id], count);
     }
@@ -326,8 +420,8 @@ Counter GameLogic::send_items(const std::vector<int64_t> &received, const Counte
       if (item->kind == apdata::ItemKind::ShopUnlock) shop_received.push_back(item);
     for (const auto *coupon : items) {
       if (coupon->kind != apdata::ItemKind::Coupon) continue;
-      auto previous = old_sent.find(coupon->id);
-      if (++seen[coupon->id] <= (previous == old_sent.end() ? 0 : previous->second)) continue;
+      auto previous = base.find(coupon->id);
+      if (++seen[coupon->id] <= (previous == base.end() ? 0 : previous->second)) continue;
       std::vector<const apdata::Item *> matches;
       for (const auto *unlock : shop_received)
         if (unlock->groups & coupon->groups) matches.push_back(unlock);
@@ -337,29 +431,50 @@ Counter GameLogic::send_items(const std::vector<int64_t> &received, const Counte
       break;
     }
 
+    std::string save_counts;  // written to the save together with the delivery
+    if (linked) {
+      save_counts = "{";
+      for (const auto &[id, count] : new_sent) {
+        auto previous = base.find(id);
+        if (previous == base.end() || previous->second != count)
+          save_counts += "[" + std::to_string(id) + "] = " + std::to_string(count) + ", ";
+      }
+      save_counts += "}";
+    }
     std::string message = messages_.empty() ? std::string() : messages_.front();
-    if (send_once(money_total, message, support_item)) {
+    if (send_once(money_total, message, support_item, save_counts)) {
       if (!message.empty()) messages_.pop_front();
+      if (linked) save_sent_ = new_sent;
       return new_sent;
     }
-    return old_sent;
+    return base;
   } catch (const GameError &) {
     return old_sent;
   }
 }
 
-bool GameLogic::send_once(int64_t money, const std::string &message, const std::string &support_item) {
+bool GameLogic::send_once(int64_t money, const std::string &message, const std::string &support_item,
+                          const std::string &counts) {
   if (!money && message.empty() && support_item.empty()) return false;
-  auto payload = std::make_tuple(money, message, support_item);
+  auto payload = std::make_tuple(money, message, support_item, counts);
   if (!pending_delivery_ || pending_delivery_->second != payload)
     pending_delivery_ = std::make_pair(delivery_prefix_ + "-" + std::to_string(next_delivery_++), payload);
   call("AP_Deliver", lua_quote(pending_delivery_->first) + ", " + std::to_string(money) + ", " + lua_quote(message) +
-                         ", " + lua_quote(support_item));
+                         ", " + lua_quote(support_item) + (counts.empty() ? "" : ", " + counts));
   if (log_ && (money || !support_item.empty())) {
     std::string text = "Delivered";
-    if (money) text += " $" + std::to_string(money);
-    if (!support_item.empty()) text += (money ? " and " : " ") + std::string("free ") + support_item;
-    log_(text);
+    if (money) {
+      std::string digits = std::to_string(money);
+      for (int i = int(digits.size()) - 3; i > 0; i -= 3) digits.insert(size_t(i), ",");
+      text += " $" + digits;
+    }
+    if (!support_item.empty()) {
+      std::string name = support_item;  // the shop item's display name, if known
+      for (const auto &item : apdata::ITEMS)
+        if (item.kind == apdata::ItemKind::ShopUnlock && support_item == item.shop_template) name = item.name;
+      text += (money ? " and a free " : " a free ") + name;
+    }
+    log_(text + ".");
   }
   pending_delivery_.reset();
   return true;

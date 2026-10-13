@@ -74,6 +74,7 @@ class Session {
   double next_sync_ = 0;
   double connect_started_ = 0;
   bool warned_slow_connect_ = false;
+  bool warned_save_mismatch_ = false;
 };
 
 }  // namespace ap

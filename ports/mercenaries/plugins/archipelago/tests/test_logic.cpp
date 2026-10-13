@@ -147,6 +147,76 @@ int main(int argc, char **argv) {
   check(sent5[money->id] == 3, "delivered once ready again");
   check(io.eval("TEST_money") == std::to_string(1000 + 3 * money->money), "third money copy paid exactly once");
 
+  // ---- Save binding ---------------------------------------------------
+  {
+    LuaGameIO save_io(argv[1]);
+    std::vector<std::string> save_log;
+    ap::GameLogic linked(save_io, [&](const std::string &line) { save_log.push_back(line); });
+    enter_gameplay(save_io, 0x00200000);
+    const std::string cash = std::to_string(money->money);
+    auto money_is = [&](int copies) {
+      return save_io.eval("TEST_money") == std::to_string(1000 + copies * money->money);
+    };
+    linked.bind_save(1234);
+    std::vector<int64_t> got = {money->id};
+    linked.send_items(got, {}, options);
+    check(linked.save_state() == ap::SaveState::Linked, "fresh save linked");
+    check(save_io.eval("TEST_scribble.ap_seed") == "1234", "save stamped with the seed");
+    check(money_is(1) && save_io.eval("TEST_scribble.ap_n" + std::to_string(money->id)) == "1",
+          "cash delivered and recorded in the save");
+    save_io.lua("SAVE1 = TEST_save()");
+
+    got.push_back(money->id);
+    ap::Counter server_record = {{money->id, 99}};  // ignored while the save is linked
+    linked.send_items(got, server_record, options);
+    check(money_is(2), "second cash copy delivered from the save record, not the server's");
+
+    save_io.lua("TEST_load(SAVE1)");  // load an older save; the VM stays
+    check(money_is(1), "older save loaded (cash back to one copy)");
+    linked.send_items(got, {}, options);
+    check(money_is(2), "load detected without a VM rebuild; missing cash re-delivered once");
+    bool saw_load = false;
+    for (const auto &line : save_log) saw_load |= line.find("A save was loaded") != std::string::npos;
+    check(saw_load, "load reported in the log");
+    linked.send_items(got, {}, options);
+    check(money_is(2), "no further delivery after catching up");
+
+    save_io.lua("TEST_load(SAVE1); AP = nil; AP_Version = nil");  // load with a VM rebuild
+    save_io.poke32(0x003717BC, 0x00300000);
+    linked.send_items(got, {}, options);
+    check(money_is(2), "load with VM rebuild: missing cash re-delivered once");
+
+    ap::GameLogic other(save_io);
+    other.bind_save(9999);
+    other.send_items({money->id, money->id, money->id}, {}, options);
+    check(other.save_state() == ap::SaveState::Mismatch && money_is(2), "save of another seed: nothing delivered");
+    bool refused = false;
+    try {
+      other.get_checks_and_hints(missing, options);
+    } catch (const ap::SaveMismatch &) {
+      refused = true;
+    }
+    check(refused, "save of another seed: no checks read");
+    check(save_io.eval("TEST_scribble.ap_seed") == "1234", "foreign save's stamp left alone");
+  }
+  {
+    LuaGameIO plain_io(argv[1]);
+    plain_io.lua("TEST_scribble_writable = false");
+    ap::GameLogic fallback(plain_io);
+    enter_gameplay(plain_io, 0x00200000);
+    fallback.bind_save(1234);
+    ap::Counter record = fallback.send_items({money->id}, {}, options);
+    check(fallback.save_state() == ap::SaveState::Unsupported, "save that cannot hold data: falls back");
+    check(record[money->id] == 1 && plain_io.eval("TEST_money") == std::to_string(1000 + money->money),
+          "fallback uses the caller's record");
+    fallback.send_items({money->id}, record, options);
+    check(plain_io.eval("TEST_money") == std::to_string(1000 + money->money), "fallback does not pay twice");
+  }
+  check(ap::GameLogic::save_stamp("12345", 0, 1) == ap::GameLogic::save_stamp("12345", 0, 1) &&
+            ap::GameLogic::save_stamp("12345", 0, 1) != ap::GameLogic::save_stamp("12345", 0, 2) &&
+            ap::GameLogic::save_stamp("12345", 0, 1) < (1u << 24) && ap::GameLogic::save_stamp("12345", 0, 1) != 0,
+        "stamps are stable, per slot, 24-bit and non-zero");
+
   std::printf("%s (%d failure%s)\n", failures ? "FAILED" : "ALL OK", failures, failures == 1 ? "" : "s");
   return failures ? 1 : 0;
 }

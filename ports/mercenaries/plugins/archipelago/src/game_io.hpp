@@ -31,6 +31,13 @@ class GameError : public std::runtime_error {
   using std::runtime_error::runtime_error;
 };
 
+// The loaded save is bound to a different seed, team or slot. Nothing in the
+// game is changed and no checks are sent until the right save is loaded.
+class SaveMismatch : public GameError {
+ public:
+  using GameError::GameError;
+};
+
 // Lua 5.0 string literal for arbitrary bytes.
 inline std::string lua_quote(const std::string &text) {
   std::string out = "\"";
