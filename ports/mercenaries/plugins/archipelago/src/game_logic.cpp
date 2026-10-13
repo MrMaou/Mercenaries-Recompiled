@@ -77,12 +77,6 @@ GameLogic::GameLogic(GameIO &io, Log log) : io_(io), log_(std::move(log)), rando
   for (auto &suit : cards_) suit.fill(1);
 }
 
-void GameLogic::set_bounty_address(int type, uint32_t address, unsigned size) {
-  if (type < 0 || type >= 4) return;
-  bounty_address_[type] = address;
-  bounty_size_[type] = size == 1 || size == 2 || size == 4 ? size : 4;
-}
-
 //// Game access ////
 
 std::string GameLogic::lua(const std::string &source) {
@@ -273,29 +267,17 @@ GameLogic::Poll GameLogic::parse_poll(const std::string &text) const {
       quadrant = value;
     } else if (key == "blocked_shop") {
       poll.blocked_shop = to_int(value);
+    } else if (key.rfind("bounty.", 0) == 0) {
+      // Short keys from AP_Poll, in apdata::BOUNTY_TYPES order.
+      static const char *const KINDS[4] = {"lp", "bp", "mon", "tr"};
+      for (int type = 0; type < 4; ++type)
+        if (key.compare(7, std::string::npos, KINDS[type]) == 0) poll.bounties[type] = to_int(value);
     }
   }
   std::transform(quadrant.begin(), quadrant.end(), quadrant.begin(),
                  [](unsigned char c) { return char(std::tolower(c)); });
   for (const char *faction : FACTIONS) poll.missions[faction] += quadrant == "nw" ? 6 : 0;
   return poll;
-}
-
-std::array<int, 4> GameLogic::read_bounties() {
-  std::array<int, 4> counts{};
-  bool any = false;
-  for (int type = 0; type < 4; ++type) {
-    if (!bounty_address_[type]) continue;
-    any = true;
-    uint32_t value = 0;
-    if (!io_.read(bounty_address_[type], &value, bounty_size_[type])) throw GameError("Bounty counter read was rejected.");
-    counts[type] = static_cast<int>(value);
-  }
-  if (!any && !warned_bounties_ && log_) {
-    log_("Bounty counter addresses are not set; bounty checks are disabled.");
-    warned_bounties_ = true;
-  }
-  return counts;
 }
 
 int GameLogic::chapter_from_cards() const {
@@ -336,7 +318,7 @@ CheckResult GameLogic::get_checks_and_hints(const std::set<int64_t> &missing, co
   cards_ = poll.cards;
   missions_ = poll.missions;
   blocked_shop_ = poll.blocked_shop;
-  bounties_ = read_bounties();
+  bounties_ = poll.bounties;
   latest_chapter_ = chapter_from_cards();
 
   CheckResult result;

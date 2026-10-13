@@ -115,7 +115,7 @@ int main(int argc, char **argv) {
   check(logic.current_chapter() == 2, "chapter 2 after the ace of clubs");
   check(checks.found.count(location_id("3C")) == 1, "unchecked clubs number card released in chapter 2");
   check(!checks.found.count(location_id("3D")), "diamonds number card not released yet");
-  check(!checks.found.count(location_id("blueprint1")), "no bounty checks without addresses");
+  check(!checks.found.count(location_id("blueprint1")), "no bounty checks without scribble keys");
   check(checks.capture_hints.count({0, 1}) && checks.capture_hints.count({17, 1}) && checks.capture_hints.size() == 2,
         "capture hints for the ace of clubs and 5 of diamonds");
 
@@ -123,12 +123,19 @@ int main(int argc, char **argv) {
   std::set<int64_t> hintable = logic.get_hintable_checks({location_id("C1")}, {location_id("3C"), location_id("4C")});
   check(hintable == std::set<int64_t>{location_id("3C")}, "3C hintable once C1 is checked");
 
-  // Bounty address configured: count comes from guest memory.
-  logic.set_bounty_address(1, 0x00500000, 4);
-  io.poke32(0x00500000, 5);
+  // Bounties: one scribble key per collected/destroyed actor, over both maps.
+  io.lua("for _, n in ipairs({'bty_blueprint30', 'bty_blueprint62', 'bty_blueprint31', 'bty_blueprint99', 'bty_blueprint110'})"
+         " do TEST_scribble[n] = 0 end"
+         " TEST_scribble.swlistenpost18 = 0 TEST_scribble.nwlistenpost30 = 0 TEST_scribble.monument_sw9 = 0"
+         " TEST_scribble.bty_treasure07 = 0 TEST_scribble.bty_treasure7 = 0 TEST_scribble.bty_blueprint111 = 0");
   checks = logic.get_checks_and_hints(missing, options);
-  check(checks.found.count(location_id("blueprint5")) && !checks.found.count(location_id("blueprint10")),
-        "blueprint bounty checks from configured address");
+  check(checks.found.count(location_id("blueprint5")) && !checks.found.count(location_id("blueprint6")),
+        "five blueprints from both maps");
+  check(checks.found.count(location_id("listening post2")) && !checks.found.count(location_id("listening post3")),
+        "two listening posts");
+  check(checks.found.count(location_id("monument1")) && !checks.found.count(location_id("monument2")), "one monument");
+  check(checks.found.count(location_id("treasure1")) && !checks.found.count(location_id("treasure2")),
+        "treasure names are zero-padded; unknown keys ignored");
 
   // VM rebuilt by a save load: runtime and idempotent state come back.
   io.lua("AP = nil; AP_Version = nil");

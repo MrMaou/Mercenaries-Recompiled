@@ -57,8 +57,6 @@ struct Settings {
   UINT hotkey = VK_F7;
   bool bridge = true;
   unsigned port = 28012, budget_ms = 4, per_update = 64;
-  uint32_t bounty[4] = {};
-  unsigned bounty_size = 4;
 
   std::wstring get(const wchar_t *section, const wchar_t *key, const wchar_t *fallback = L"") const {
     wchar_t value[1024];
@@ -67,10 +65,6 @@ struct Settings {
   }
   unsigned get_int(const wchar_t *section, const wchar_t *key, unsigned fallback) const {
     return GetPrivateProfileIntW(section, key, int(fallback), path.c_str());
-  }
-  uint32_t get_address(const wchar_t *section, const wchar_t *key) const {
-    std::wstring value = get(section, key);
-    return value.empty() ? 0 : uint32_t(wcstoul(value.c_str(), nullptr, 0));
   }
 
   void load(const std::string &directory) {
@@ -92,9 +86,6 @@ struct Settings {
     port = get_int(L"Bridge", L"Port", 28012);
     budget_ms = get_int(L"Bridge", L"UpdateBudgetMs", 4);
     per_update = get_int(L"Bridge", L"MaxRequestsPerUpdate", 64);
-    const wchar_t *bounty_keys[4] = {L"ListeningPost", L"Blueprint", L"Monument", L"Treasure"};
-    for (int i = 0; i < 4; ++i) bounty[i] = get_address(L"Bounties", bounty_keys[i]);
-    bounty_size = get_int(L"Bounties", L"Size", 4);
   }
 
   void save_connection() const {
@@ -241,8 +232,6 @@ MERC_PLUGIN_EXPORT int MERC_PLUGIN_CALL MercenariesPlugin_Init(const MercPluginH
 
     state.settings.load(host->v1.settings_directory);
     state.logic.hud_messages = state.settings.hud_messages;
-    for (int i = 0; i < 4; ++i)
-      if (state.settings.bounty[i]) state.logic.set_bounty_address(i, state.settings.bounty[i], state.settings.bounty_size);
 
     Panel::Callbacks callbacks;
     callbacks.connect = [&state](const std::string &server, const std::string &slot, const std::string &password,

@@ -33,7 +33,11 @@ The panel saves the server, slot and password in
 - **Items:** Ace intel, Merchant of Menace unlocks (vanilla unlocks are blocked),
   cash, faction reputation floors and free samples.
 - **Goal:** sent when you verify the Ace of the goal chapter.
-- **Bounties:** off until their counter addresses are known; see below.
+- **Bounties:** blueprints, treasures, listening posts and monuments, counted
+  from the scribble memory key the game writes for each one collected or
+  destroyed (so they survive reloads and count both maps). The game has 55
+  listening posts and 20 monuments; the apworld's 56th and 21st checks (only
+  with `all` or a number) cannot be reached here.
 
 Game changes go through Lua in the game's script VM (the runtime from mercs-ap
 `recomp_runtime.py`, embedded in `src/ap_data.inc`).
@@ -72,30 +76,10 @@ do not alternate between it and the in-game client on one save.
 | Client | Toasts | 1 | In-frame notices. |
 | Client | HudMessages | 0 | Also show messages through the game's HUD, one per delivery. |
 | Bridge | Enabled, Port | 1, 28012 | Local socket for the Python client and `tools/recomp_repl.py`. |
-| Bounties | ListeningPost, Blueprint, Monument, Treasure, Size | | Bounty counter addresses (hex) and width. |
 
 The bridge refuses Lua and write requests while the in-game client is active,
 so the Python client and the in-game client cannot both deliver items. Reads
 still work, so `tools/recomp_repl.py` can scan memory during a session.
-
-### Finding the bounty counters
-
-Bounty totals live in native PDA code with no Lua API. With the game running:
-
-~~~text
-python tools/recomp_repl.py      (in mercs-ap)
-:scan start
-  collect one blueprint
-:scan inc
-  collect another
-:scan inc
-:scan list
-~~~
-
-Put the remaining address under `[Bounties]` (for example
-`Blueprint=0x00412345`) and restart. Until all four are set, set every bounty
-type to `none` in your YAML, or progression items placed on bounties will be
-unreachable.
 
 ## Building
 

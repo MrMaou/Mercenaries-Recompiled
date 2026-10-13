@@ -54,9 +54,6 @@ class GameLogic {
 
   explicit GameLogic(GameIO &io, Log log = {});
 
-  // Bounty counters have no Lua API; their addresses come from settings.
-  void set_bounty_address(int type, uint32_t address, unsigned size);
-
   // Connector API (MercenariesConnector.py).
   int current_chapter() const { return latest_chapter_; }
   CheckResult get_checks_and_hints(const std::set<int64_t> &missing, const SlotOptions &options);
@@ -92,6 +89,7 @@ class GameLogic {
   struct Poll {
     std::array<std::array<int, 13>, 4> cards{};
     std::map<std::string, int> missions;
+    std::array<int, 4> bounties{};  // apdata::BOUNTY_TYPES order
     int blocked_shop = 0;
   };
 
@@ -100,7 +98,6 @@ class GameLogic {
   uint32_t read_u32(uint32_t address);
   void inject(uint32_t vm);
   Poll parse_poll(const std::string &text) const;
-  std::array<int, 4> read_bounties();
   int chapter_from_cards() const;
 
   bool is_checked(const apdata::Location &location) const;
@@ -143,9 +140,6 @@ class GameLogic {
   std::array<std::array<int, 13>, 4> cards_{};
   std::map<std::string, int> missions_;
   std::array<int, 4> bounties_{};
-  std::array<uint32_t, 4> bounty_address_{};
-  std::array<unsigned, 4> bounty_size_{};
-  bool warned_bounties_ = false;
   std::map<std::string, std::string> step_errors_;  // last error logged per step
   std::map<std::string, std::string> shop_templates_;  // lower-case -> exact, per VM
   bool batching_ = false, validated_ = false;
